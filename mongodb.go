@@ -1,38 +1,33 @@
 package composeio
 
 import (
-  "net/http"
-  "log"
-  // "encoding/json"
-  // "fmt"
-  "bytes"
-  "time"
+  "crypto/tls"
+  "crypto/x509"
   "io/ioutil"
+
+  "fmt"
+  "net"
+  "os"
+  "log"
   "strings"
-  "errors"
+
+  "gopkg.in/mgo.v2"
 
 )
 
 // ##############################
-// Client is the object that handles talking to the Datadog API. This maintains
-// state information for a particular application connection.
+// Client is the object that handles talking to compose
 type Client struct {
-  ComposeioToken string
-
-  // URL to the Compose API to use
-  URL string
-
-  //The Http Client that is used to make requests
-  HttpClient *http.Client
+  SslPemPath string
+  AdminMongodbURL string
 }
 
 // NewClient returns a new composeio.Client which can be used to access the API
 // methods. The expected argument is the composeio token.
-func NewClient(composeio_token string) *Client {
+func NewClient(admin_mongodb_url string, ssl_pem_path string) *Client {
   return &Client{
-    ComposeioToken:     composeio_token,
-    URL: "https://api.compose.io",
-    HttpClient: http.DefaultClient,
+    AdminMongodbURL:     admin_mongodb_url,
+    SslPemPath: ssl_pem_path,
   }
 }
 
@@ -44,10 +39,6 @@ type Mongodb struct {
   Name    string   `json:"name,omitempty"`
 }
 
-type Collection struct{
-  Name string `json:"name,omitempty"`
-}
-
 type User struct{
   Username string `json:"username,omitempty"`
   Password string `json:"password,omitempty"`
@@ -57,230 +48,111 @@ type User struct{
 
 // #############################
 
-
-func (client *Client) CreateMongodb(mongodb *Mongodb) error {
-    // could not create mongodb directly, must create a collection
-
-    collection := &Collection{
-      Name: "dummy_collection",
-    }
-    log.Println("[DEBUG] Creating dummpy colllection to create mongodb")
-    err := client.CreateMongodbCollection(mongodb, collection)
-    if err != nil {
-      return err
-    }
-
-    time.Sleep(time.Millisecond * 5000)
-
-    log.Println("[DEBUG] Deleting dummpy colllection from mongodb")
-    err = client.DeleteMongodbCollection(mongodb, collection)
-    if err != nil {
-      return err
-    } else {
-      return nil      
-    }
-
-}
-
-func (client *Client) ReadMongodb(mongodb *Mongodb) error {
-
-  url := client.URL + "/deployments/" + mongodb.Account + "/" + mongodb.Deployment + "/mongodb/" + mongodb.Name + "/stats"
-  log.Println("[DEBUG] URL:>", url)
-  req, err := http.NewRequest("GET", url, nil)
-  if err != nil {
-    return err
-  }
-  req.Header.Set("Content-Type", "application/json")
-  req.Header.Set("Accept-Version", "2014-06")
-  req.Header.Set("Authorization", "Bearer " + client.ComposeioToken)
-
-  resp, err := client.HttpClient.Do(req)
-
-  if err != nil {
-    return err
-  } else {
-    body, _ := ioutil.ReadAll(resp.Body)
-    log.Println("[DEBUG] Get response from composeio response: ", string(body))
-    if strings.Contains(string(body), `"dataSize":0`) {
-      // err := "error"
-      log.Println("[DEBUG] not found ")
-      return errors.New("not found")
-    } else {
-      return nil       
-    }
-  }
-
-
-}
-
-
-func (client *Client) CreateMongodbCollection(mongodb *Mongodb, collection *Collection) error {
-
-  url := client.URL + "/deployments/" + mongodb.Account + "/" + mongodb.Deployment + "/mongodb/" + mongodb.Name + "/collections"
-  log.Println("[DEBUG] URL:>", url)
-  collection_name := collection.Name
-  jsonStr := []byte(`{"name":"`+ collection_name+`"}`)
-  req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonStr))
-  if err != nil {
-    return err
-  }
-  req.Header.Set("Content-Type", "application/json")
-  req.Header.Set("Accept-Version", "2014-06")
-  req.Header.Set("Authorization", "Bearer " + client.ComposeioToken)
-
-  resp, err := client.HttpClient.Do(req)
-
-  if err != nil {
-    return err
-  } else {
-    body, _ := ioutil.ReadAll(resp.Body)
-    log.Println("[DEBUG] Get response from composeio response: ", string(body))
-    return nil 
-  }
-
-
-}
-
-func (client *Client) DeleteMongodbCollection(mongodb *Mongodb, collection *Collection) error {
-
-  url := client.URL + "/deployments/" + mongodb.Account + "/" + mongodb.Deployment + "/mongodb/" + mongodb.Name + "/collections/" + collection.Name
-  log.Println("[DEBUG] URL:>" + url)
-  req, err := http.NewRequest("DELETE", url, nil)
-  if err != nil {
-    return err
-  }
-  req.Header.Set("Content-Type", "application/json")
-  req.Header.Set("Accept-Version", "2014-06")
-  req.Header.Set("Authorization", "Bearer " + client.ComposeioToken)
-
-  
-  resp, err := client.HttpClient.Do(req)
-
-  if err != nil {
-    return err
-  } else {
-    body, _ := ioutil.ReadAll(resp.Body)
-    log.Println("[DEBUG] Get response from composeio response: ", string(body))
-    return nil 
-  }
-
-}
-
 func (client *Client) CreateMongodbUser(mongodb *Mongodb, user *User) error {
 
-  url := client.URL + "/deployments/" + mongodb.Account + "/" + mongodb.Deployment + "/mongodb/" + mongodb.Name + "/users"
-  log.Println("[DEBUG] URL:>", url)
-  username := user.Username
-  password := user.Password
-  var readOnly = "false"
-  if user.ReadOnly {
-    readOnly = "true"
-  } 
-  jsonStr := []byte(`{"username":"`+ username +`", "password":"`+ password + `", "readOnly":`+ readOnly + `}`)
-  req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonStr))
-  if err != nil {
-    return err
+  roots := x509.NewCertPool()
+  pem_path := client.SslPemPath
+  if ca, err := ioutil.ReadFile(pem_path); err == nil { 
+    roots.AppendCertsFromPEM(ca)
   }
-  req.Header.Set("Content-Type", "application/json")
-  req.Header.Set("Accept-Version", "2014-06")
-  req.Header.Set("Authorization", "Bearer " + client.ComposeioToken)
 
-  
-  resp, err := client.HttpClient.Do(req)
+  tlsConfig := &tls.Config{}
+  tlsConfig.RootCAs = roots
 
+  //connect URL:
+  // "mongodb://<username>:<password>@<hostname>:<port>,<hostname>:<port>/<db-name>
+  admin_mongodb_url := client.AdminMongodbURL
+  admin_mongodb_url = strings.TrimSuffix(admin_mongodb_url, "?ssl=true")
+
+
+  dialInfo, err := mgo.ParseURL(admin_mongodb_url)
   if err != nil {
-    return err
+    fmt.Println("Failed to parse URI: ", err)
+    os.Exit(1)
+  }
+
+  dialInfo.DialServer = func(addr *mgo.ServerAddr) (net.Conn, error) {
+    conn, err := tls.Dial("tcp", addr.String(), tlsConfig)
+    return conn, err
+  }
+
+  session, err := mgo.DialWithInfo(dialInfo)
+  if err != nil {
+    fmt.Println("Failed to connect: ", err)
+    os.Exit(1)
+  }
+
+
+  db := session.DB(mongodb.Name)
+  err = db.AddUser(user.Username, user.Password, user.ReadOnly)  //should use UpSert, but this is much easier
+  if err != nil {
+    log.Fatal(err)
+    return nil
   } else {
-    body, _ := ioutil.ReadAll(resp.Body)
-    log.Println("[DEBUG] Get response from composeio response: ", string(body))
-    return nil 
+    log.Println("[DEBUG] created" + user.Username )
+    return nil
   }
+
+  // if err != nil {
+  //   return err
+  // } else {
+  //   body, _ := ioutil.ReadAll(resp.Body)
+  //   log.Println("[DEBUG] Get response from composeio response: ", string(body))
+  //   return nil 
+  // }
+
 }
 
-// ############ the api not work #############
-// func (client *Client) ReadMongodbUser(mongodb *Mongodb, user *User) error {
-
-//   url := client.URL + "/deployments/" + mongodb.Account + "/" + mongodb.Deployment + "/mongodb/" + mongodb.Name + "/users"
-//   log.Println("[DEBUG] URL:>", url)
-//   req, err := http.NewRequest("GET", url, nil)
-//   if err != nil {
-//     return err
-//   }
-//   req.Header.Set("Content-Type", "application/json")
-//   req.Header.Set("Accept-Version", "2014-06")
-//   req.Header.Set("Authorization", "Bearer " + client.ComposeioToken)
-
-//   resp, err := client.HttpClient.Do(req)
-
-//   if err != nil {
-//     return err
-//   } else {
-//     body, _ := ioutil.ReadAll(resp.Body)
-//     log.Println("[DEBUG] Get response from composeio response: ", string(body))
-//     if !strings.Contains(string(body), user.Username) {
-//       // err := "error"
-//       log.Println("[DEBUG] "+  user.Username + " not found ")
-//       return errors.New(user.Username + " not found")
-//     } else {
-//       return nil       
-//     }
-//   }
-
-// }
 
 func (client *Client) UpdateMongodbUser(mongodb *Mongodb, user *User) error {
 
-  url := client.URL + "/deployments/" + mongodb.Account + "/" + mongodb.Deployment + "/mongodb/" + mongodb.Name + "/users/" + user.Username
-  log.Println("[DEBUG] URL:>", url)
-
-  password := user.Password
-  var readOnly = "false"
-  if user.ReadOnly {
-    readOnly = "true"
-  } 
-  jsonStr := []byte(`{"password":"`+ password + `", "readOnly":`+ readOnly + `}`)
-  req, err := http.NewRequest("PUT", url, bytes.NewBuffer(jsonStr))
-  if err != nil {
-    return err
-  }
-  req.Header.Set("Content-Type", "application/json")
-  req.Header.Set("Accept-Version", "2014-06")
-  req.Header.Set("Authorization", "Bearer " + client.ComposeioToken)
-
-  
-  resp, err := client.HttpClient.Do(req)
-
-  if err != nil {
-    return err
-  } else {
-    body, _ := ioutil.ReadAll(resp.Body)
-    log.Println("[DEBUG] Get response from composeio response: ", string(body))
-    return nil 
-  }
+  client.DeleteMongodbUser(mongodb, user)
+  client.CreateMongodbUser(mongodb, user)
+  return nil
 }
 
 func (client *Client) DeleteMongodbUser(mongodb *Mongodb, user *User) error {
 
-  url := client.URL + "/deployments/" + mongodb.Account + "/" + mongodb.Deployment + "/mongodb/" + mongodb.Name + "/users/" + user.Username
-  log.Println("[DEBUG] URL:>", url)
-  req, err := http.NewRequest("DELETE", url, nil )
-  if err != nil {
-    return err
+
+  roots := x509.NewCertPool()
+  pem_path := client.SslPemPath
+  if ca, err := ioutil.ReadFile(pem_path); err == nil { 
+    roots.AppendCertsFromPEM(ca)
   }
-  req.Header.Set("Content-Type", "application/json")
-  req.Header.Set("Accept-Version", "2014-06")
-  req.Header.Set("Authorization", "Bearer " + client.ComposeioToken)
 
-  
-  resp, err := client.HttpClient.Do(req)
+  tlsConfig := &tls.Config{}
+  tlsConfig.RootCAs = roots
 
+  admin_mongodb_url := client.AdminMongodbURL
+  admin_mongodb_url = strings.TrimSuffix(admin_mongodb_url, "?ssl=true")
+
+  dialInfo, err := mgo.ParseURL(admin_mongodb_url)
   if err != nil {
-    return err
+    fmt.Println("Failed to parse URI: ", err)
+    os.Exit(1)
+  }
+
+  dialInfo.DialServer = func(addr *mgo.ServerAddr) (net.Conn, error) {
+    conn, err := tls.Dial("tcp", addr.String(), tlsConfig)
+    return conn, err
+  }
+  session, err := mgo.DialWithInfo(dialInfo)
+  if err != nil {
+    fmt.Println("Failed to connect: ", err)
+    os.Exit(1)
+  }
+
+
+  db := session.DB(mongodb.Name)
+  err = db.RemoveUser(user.Username)
+  if err != nil {
+    log.Fatal(err)
+    return nil
   } else {
-    body, _ := ioutil.ReadAll(resp.Body)
-    log.Println("[DEBUG] Get response from composeio response: ", string(body))
-    return nil 
+    log.Println("[DEBUG] created" + user.Username )
+    return nil
   }
+
 }
 
 
